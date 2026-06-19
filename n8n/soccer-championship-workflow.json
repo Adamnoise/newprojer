@@ -1,0 +1,339 @@
+{
+  "name": "Soccer Championship Analysis",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "trigger",
+      "name": "When called via webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ],
+      "webhookId": "webhook-id-placeholder",
+      "webhookPath": "upload-csv"
+    },
+    {
+      "parameters": {
+        "values": {
+          "string": [
+            {
+              "name": "leagueName",
+              "value": "Premier League"
+            },
+            {
+              "name": "season",
+              "value": "2024-2025"
+            },
+            {
+              "name": "csvFilePath",
+              "value": ""
+            }
+          ]
+        }
+      },
+      "id": "workflow-config",
+      "name": "Workflow Configuration",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.3,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "{{ $json.csvDataUrl }}",
+        "options": {}
+      },
+      "id": "fetch-csv-data",
+      "name": "Fetch CSV Data",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "credentials": {
+          "postgresCredentialType": "postgresdb"
+        },
+        "query": "INSERT INTO league_data (league_name, season, data, created_at) VALUES ($1, $2, $3, NOW()) RETURNING id;",
+        "queryParams": [
+          "{{ $json.leagueName }}",
+          "{{ $json.season }}",
+          "{{ JSON.stringify($json) }}"
+        ]
+      },
+      "id": "store-league-data",
+      "name": "Store League Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        850,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "credentials": {
+          "postgresCredentialType": "postgresdb"
+        },
+        "query": "INSERT INTO match_data (league_id, match_data, created_at) VALUES ($1, $2, NOW());",
+        "queryParams": [
+          "{{ $node['store-league-data'].json.id }}",
+          "{{ JSON.stringify($json.matches) }}"
+        ]
+      },
+      "id": "store-match-data",
+      "name": "Store Match Data",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        850,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "credentials": {
+          "postgresCredentialType": "postgresdb"
+        },
+        "query": "SELECT * FROM analysis_patterns WHERE league_id = $1 AND is_active = true;",
+        "queryParams": [
+          "{{ $node['store-league-data'].json.id }}"
+        ]
+      },
+      "id": "load-patterns",
+      "name": "Load Patterns",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        1050,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "credentials": {
+          "postgresCredentialType": "postgresdb"
+        },
+        "query": "SELECT * FROM match_data WHERE league_id = $1 ORDER BY match_date DESC;",
+        "queryParams": [
+          "{{ $node['store-league-data'].json.id }}"
+        ]
+      },
+      "id": "load-match-data-analysis",
+      "name": "Load Match Data for Analysis",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        1050,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://your-api-endpoint.com/api/analysis",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "leagueId": "{{ $node['store-league-data'].json.id }}",
+          "patterns": "{{ $node['load-patterns'].json }}",
+          "matchData": "{{ $node['load-match-data-analysis'].json }}"
+        }
+      },
+      "id": "execute-analysis",
+      "name": "Execute Pattern Analysis",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1250,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "credentials": {
+          "postgresCredentialType": "postgresdb"
+        },
+        "query": "INSERT INTO analysis_results (league_id, analysis_data, alert_triggered, created_at) VALUES ($1, $2, $3, NOW());",
+        "queryParams": [
+          "{{ $node['store-league-data'].json.id }}",
+          "{{ JSON.stringify($node['execute-analysis'].json) }}",
+          "{{ $node['execute-analysis'].json.alertTriggered }}"
+        ]
+      },
+      "id": "store-analysis-results",
+      "name": "Store Analysis Results",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.3,
+      "position": [
+        1450,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "toEmail": "recipient@example.com",
+        "subject": "Alert: Soccer Championship Pattern Detected",
+        "htmlBody": "<h1>Soccer Championship Alert</h1><p>{{ $node['execute-analysis'].json.alertMessage }}</p>",
+        "options": {}
+      },
+      "id": "send-alert-email",
+      "name": "Send Alert Email",
+      "type": "n8n-nodes-base.sendGrid",
+      "typeVersion": 1,
+      "position": [
+        1650,
+        300
+      ],
+      "onError": "continueErrorHandling"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "text": "Soccer Championship Alert",
+          "blocks": [
+            {
+              "type": "section",
+              "text": {
+                "type": "mrkdwn",
+                "text": "🔔 *Pattern Alert Detected*\n*League:* {{ $json.leagueName }}\n*Alert:* {{ $node['execute-analysis'].json.alertMessage }}"
+              }
+            }
+          ]
+        }
+      },
+      "id": "send-webhook-notification",
+      "name": "Send Webhook Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [
+        1650,
+        500
+      ],
+      "onError": "continueErrorHandling"
+    }
+  ],
+  "connections": {
+    "trigger": {
+      "main": [
+        [
+          {
+            "node": "workflow-config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "workflow-config": {
+      "main": [
+        [
+          {
+            "node": "fetch-csv-data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "fetch-csv-data": {
+      "main": [
+        [
+          {
+            "node": "store-league-data",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "store-match-data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store-league-data": {
+      "main": [
+        [
+          {
+            "node": "load-patterns",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "load-match-data-analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "load-patterns": {
+      "main": [
+        [
+          {
+            "node": "execute-analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "load-match-data-analysis": {
+      "main": [
+        [
+          {
+            "node": "execute-analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "execute-analysis": {
+      "main": [
+        [
+          {
+            "node": "store-analysis-results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "store-analysis-results": {
+      "main": [
+        [
+          {
+            "node": "send-alert-email",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "send-webhook-notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
